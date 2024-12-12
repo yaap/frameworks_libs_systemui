@@ -24,32 +24,43 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.android.app.tracing.TraceUtils.trace
+import com.android.app.tracing.coroutines.createCoroutineTracingContext
+import com.android.app.tracing.coroutines.nameCoroutine
 import com.android.app.tracing.demo.experiments.Experiment
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.newSingleThreadContext
 
 private const val TRACK_NAME = "Active experiments"
 
 class MainActivity : Activity() {
 
-    @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
-    val threadContext = newSingleThreadContext("Experiment launcher")
-
     private val allExperiments = lazy {
         (applicationContext as MainApplication).appComponent.getAllExperiments()
     }
 
+    private val experimentLaunchContext = lazy {
+        (applicationContext as MainApplication).appComponent.getExperimentDispatcher()
+    }
+
+    private val scopeForExperiment = mutableMapOf<String, CoroutineScope>()
+
     private var logContainer: ScrollView? = null
     private var loggerView: TextView? = null
 
+    private fun getScopeForExperiment(name: String): CoroutineScope {
+        var scope = scopeForExperiment[name]
+        if (scope == null) {
+            scope =
+                CoroutineScope(experimentLaunchContext.value + createCoroutineTracingContext(name))
+            scopeForExperiment[name] = scope
+        }
+        return scope
+    }
+
     private fun <T : Experiment> createButtonForExperiment(demo: T): Button {
-        val buttonCoroutineScope = CoroutineScope(threadContext)
         var launchCounter = 0
         var job: Job? = null
         val className = demo::class.simpleName ?: "<unknown class>"
@@ -58,20 +69,25 @@ class MainActivity : Activity() {
                 context.getString(
                     R.string.run_experiment_button_text,
                     className,
-                    demo.getDescription()
+                    demo.getDescription(),
                 )
             setOnClickListener {
                 val experimentName = "$className #${launchCounter++}"
                 trace("$className#onClick") {
                     job?.let { trace("cancel") { it.cancel("Cancelled due to click") } }
-                    trace("launch") { job = buttonCoroutineScope.launch { demo.run() } }
+                    trace("launch") {
+                        job =
+                            getScopeForExperiment(className).launch(nameCoroutine("run")) {
+                                demo.run()
+                            }
+                    }
                     trace("toast") { appendLine("$experimentName started") }
                     job?.let {
                         Trace.asyncTraceForTrackBegin(
                             Trace.TRACE_TAG_APP,
                             TRACK_NAME,
-                            "Running $experimentName",
-                            it.hashCode()
+                            experimentName,
+                            it.hashCode(),
                         )
                     }
                 }
