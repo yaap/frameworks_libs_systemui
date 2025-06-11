@@ -16,42 +16,52 @@
 
 package com.android.test.tracing.coroutines.util
 
+import kotlin.concurrent.Volatile
 import org.junit.Assert.assertFalse
+
+private val ALL_THREAD_STATES = hashMapOf<Thread, MutableList<String>>()
+
+private class ThreadTraceState : ThreadLocal<MutableList<String>>() {
+    override fun initialValue(): MutableList<String> {
+        synchronized(ALL_THREAD_STATES) {
+            val newValue = mutableListOf<String>()
+            ALL_THREAD_STATES[Thread.currentThread()] = newValue
+            return newValue
+        }
+    }
+}
+
+private val CURRENT_TRACE_STATE = ThreadTraceState()
+
+private fun currentThreadTraceState(): MutableList<String> {
+    return CURRENT_TRACE_STATE.get()!!
+}
 
 object FakeTraceState {
 
-    var isTracingEnabled: Boolean = true
+    @Volatile @JvmStatic var isTracingEnabled: Boolean = true
 
-    private val allThreadStates = hashMapOf<Long, MutableList<String>>()
+    fun clearAll() {
+        synchronized(ALL_THREAD_STATES) { ALL_THREAD_STATES.entries.forEach { it.value.clear() } }
+    }
 
     fun begin(sectionName: String) {
-        val threadId = currentThreadId()
-        synchronized(allThreadStates) {
-            if (allThreadStates.containsKey(threadId)) {
-                allThreadStates[threadId]!!.add(sectionName)
-            } else {
-                allThreadStates[threadId] = mutableListOf(sectionName)
-            }
-        }
+        currentThreadTraceState().add(sectionName)
     }
 
     fun end() {
-        val threadId = currentThreadId()
-        synchronized(allThreadStates) {
-            assertFalse(
-                "Attempting to close trace section on thread=$threadId, " +
-                    "but there are no open sections",
-                allThreadStates[threadId].isNullOrEmpty(),
-            )
-            allThreadStates[threadId]!!.removeLast()
-        }
+        val threadId = Thread.currentThread().threadId()
+        val traceSections = currentThreadTraceState()
+        assertFalse(
+            "Attempting to close trace section on thread #$threadId, " +
+                "but there are no open sections",
+            traceSections.isEmpty(),
+        )
+        traceSections.removeLast()
     }
 
     fun getOpenTraceSectionsOnCurrentThread(): Array<String> {
-        val threadId = currentThreadId()
-        synchronized(allThreadStates) {
-            return allThreadStates[threadId]?.toTypedArray() ?: emptyArray()
-        }
+        return currentThreadTraceState().toTypedArray()
     }
 
     /**
@@ -62,8 +72,8 @@ object FakeTraceState {
      */
     override fun toString(): String {
         val sb = StringBuilder()
-        synchronized(allThreadStates) {
-            allThreadStates.entries.forEach { sb.appendLine("${it.key} -> ${it.value}") }
+        synchronized(ALL_THREAD_STATES) {
+            ALL_THREAD_STATES.entries.forEach { sb.appendLine("${it.key} -> ${it.value}") }
         }
         return sb.toString()
     }

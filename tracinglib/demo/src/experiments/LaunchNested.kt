@@ -15,42 +15,33 @@
  */
 package com.example.tracing.demo.experiments
 
-import com.android.app.tracing.coroutines.launchTraced as launch
-import com.example.tracing.demo.Default
-import com.example.tracing.demo.FixedThreadA
-import com.example.tracing.demo.FixedThreadB
-import com.example.tracing.demo.FixedThreadC
-import com.example.tracing.demo.IO
+import com.android.app.tracing.coroutines.launchTraced
+import com.android.app.tracing.coroutines.traceCoroutine
+import com.example.tracing.demo.FixedThread1
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 @Singleton
-class LaunchNested
-@Inject
-constructor(
-    @FixedThreadA private var dispatcherA: CoroutineDispatcher,
-    @FixedThreadB private var dispatcherB: CoroutineDispatcher,
-    @FixedThreadC private val dispatcherC: CoroutineDispatcher,
-    @Default private var defaultContext: CoroutineDispatcher,
-    @IO private var ioContext: CoroutineDispatcher,
-) : Experiment {
+class LaunchNested @Inject constructor(@FixedThread1 private var dispatcher1: CoroutineDispatcher) :
+    TracedExperiment() {
     override val description: String = "launch{launch{launch{launch{}}}}"
 
-    override suspend fun start(): Unit = coroutineScope {
-        launch("launch(threadA)", dispatcherA) {
-            forceSuspend("A", 250)
-            launch("launch(threadB)", dispatcherB) {
-                forceSuspend("B", 250)
-                launch("launch(threadC)", dispatcherC) {
-                    forceSuspend("C", 250)
-                    launch("launch(Dispatchers.Default)", defaultContext) {
-                        forceSuspend("D", 250)
-                        launch("launch(Dispatchers.IO)", ioContext) { forceSuspend("E", 250) }
-                    }
+    override suspend fun runExperiment(): Unit = coroutineScope {
+        fun CoroutineScope.recursivelyLaunch(n: Int) {
+            if (n == 400) return
+            launchTraced("launch#$n", start = CoroutineStart.UNDISPATCHED) {
+                traceCoroutine("trace-span") {
+                    recursivelyLaunch(n + 1)
+                    delay(1)
                 }
             }
         }
+        withContext(dispatcher1) { recursivelyLaunch(0) }
     }
 }

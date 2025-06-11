@@ -17,6 +17,7 @@
 package com.google.android.torus.core.wallpaper
 
 import android.app.WallpaperColors
+import android.app.wallpaper.WallpaperDescription
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -51,6 +52,8 @@ abstract class LiveWallpaper : WallpaperService() {
         const val COMMAND_GOING_TO_SLEEP = "android.wallpaper.goingtosleep"
         const val COMMAND_PREVIEW_INFO = "android.wallpaper.previewinfo"
         const val COMMAND_LOCKSCREEN_LAYOUT_CHANGED = "android.wallpaper.lockscreen_layout_changed"
+        const val COMMAND_LOCKSCREEN_TAP = "android.wallpaper.lockscreen_tap"
+        const val COMMAND_KEYGUARD_APPEARING = "android.wallpaper.keyguardappearing"
         const val WALLPAPER_FLAG_NOT_FOUND = -1
     }
 
@@ -133,7 +136,11 @@ abstract class LiveWallpaper : WallpaperService() {
      * well). You can track the lifecycle when *any* Engine is active using the
      * is{First/Last}ActiveInstance parameters of the create/destroy methods.
      */
-    abstract fun getWallpaperEngine(context: Context, surfaceHolder: SurfaceHolder): TorusEngine
+    abstract fun getWallpaperEngine(
+        context: Context,
+        surfaceHolder: SurfaceHolder,
+        wallpaperDescription: WallpaperDescription? = null,
+    ): TorusEngine
 
     /**
      * returns a new instance of [LiveWallpaperEngineWrapper]. Caution: This function should not be
@@ -141,6 +148,12 @@ abstract class LiveWallpaper : WallpaperService() {
      */
     override fun onCreateEngine(): Engine {
         val wrapper = LiveWallpaperEngineWrapper()
+        wakeStateChangeListeners.add(WeakReference(wrapper))
+        return wrapper
+    }
+
+    override fun onCreateEngine(description: WallpaperDescription): Engine? {
+        val wrapper = LiveWallpaperEngineWrapper(description)
         wakeStateChangeListeners.add(WeakReference(wrapper))
         return wrapper
     }
@@ -197,9 +210,7 @@ abstract class LiveWallpaper : WallpaperService() {
             return false
         }
 
-        /**
-         * Returns the information if the wallpaper is visible.
-         */
+        /** Returns the information if the wallpaper is visible. */
         fun isVisible(): Boolean {
             this.wallpaperServiceEngine?.let {
                 return it.isVisible
@@ -242,7 +253,9 @@ abstract class LiveWallpaper : WallpaperService() {
      * engine is created. Also, wrapping our [TorusEngine] inside [WallpaperService.Engine] allow us
      * to reuse [TorusEngine] in other places, like Activities.
      */
-    private inner class LiveWallpaperEngineWrapper : WallpaperService.Engine() {
+    private inner class LiveWallpaperEngineWrapper(
+        private val wallpaperDescription: WallpaperDescription? = null
+    ) : WallpaperService.Engine() {
         private lateinit var wallpaperEngine: TorusEngine
 
         override fun onCreate(surfaceHolder: SurfaceHolder) {
@@ -261,7 +274,7 @@ abstract class LiveWallpaper : WallpaperService() {
                     this@LiveWallpaper
                 }
 
-            wallpaperEngine = getWallpaperEngine(context, surfaceHolder)
+            wallpaperEngine = getWallpaperEngine(context, surfaceHolder, wallpaperDescription)
             numEngines++
 
             /*
@@ -270,6 +283,11 @@ abstract class LiveWallpaper : WallpaperService() {
              * loop.
              */
             if (wallpaperEngine is TorusTouchListener) setTouchEventsEnabled(true)
+        }
+
+        override fun onApplyWallpaper(which: Int): WallpaperDescription? {
+            super.onApplyWallpaper(which)
+            return wallpaperEngine.applyWallpaper(which)
         }
 
         override fun onSurfaceCreated(holder: SurfaceHolder) {
@@ -401,6 +419,14 @@ abstract class LiveWallpaper : WallpaperService() {
                         onLockscreenLayoutChanged(extras)
                     }
                 }
+                COMMAND_LOCKSCREEN_TAP -> {
+                    if (extras != null) {
+                        onLockscreenFocalAreaTap(x, y)
+                    }
+                }
+                COMMAND_KEYGUARD_APPEARING -> {
+                    onKeyguardAppearing()
+                }
             }
 
             if (resultRequested) return extras
@@ -453,6 +479,12 @@ abstract class LiveWallpaper : WallpaperService() {
             }
         }
 
+        fun onKeyguardAppearing() {
+            if (wallpaperEngine is LiveWallpaperKeyguardEventListener) {
+                (wallpaperEngine as LiveWallpaperKeyguardEventListener).onKeyguardAppearing()
+            }
+        }
+
         fun onPreviewInfoReceived(extras: Bundle?) {
             if (wallpaperEngine is LiveWallpaperEventListener) {
                 (wallpaperEngine as LiveWallpaperEventListener).onPreviewInfoReceived(extras)
@@ -462,6 +494,12 @@ abstract class LiveWallpaper : WallpaperService() {
         fun onLockscreenLayoutChanged(extras: Bundle) {
             if (wallpaperEngine is LiveWallpaperEventListener) {
                 (wallpaperEngine as LiveWallpaperEventListener).onLockscreenLayoutChanged(extras)
+            }
+        }
+
+        fun onLockscreenFocalAreaTap(x: Int, y: Int) {
+            if (wallpaperEngine is TorusTouchListener) {
+                (wallpaperEngine as TorusTouchListener).onLockscreenFocalAreaTap(x, y)
             }
         }
     }

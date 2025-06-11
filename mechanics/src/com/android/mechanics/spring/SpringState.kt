@@ -31,7 +31,7 @@ import kotlin.math.sqrt
  * @see SpringState function to create this value.
  */
 @JvmInline
-value class SpringState(private val packedValue: Long) {
+value class SpringState(val packedValue: Long) {
     val displacement: Float
         get() = unpackFloat1(packedValue)
 
@@ -49,6 +49,11 @@ value class SpringState(private val packedValue: Long) {
         val currentEnergy = parameters.stiffness * displacement * displacement + velocity * velocity
         val maxStableEnergy = parameters.stiffness * stableThreshold * stableThreshold
         return currentEnergy <= maxStableEnergy
+    }
+
+    /** Adds the specified [displacementDelta] and [velocityDelta] to the returned state. */
+    fun nudge(displacementDelta: Float = 0f, velocityDelta: Float = 0f): SpringState {
+        return SpringState(displacement + displacementDelta, velocity + velocityDelta)
     }
 
     override fun toString(): String {

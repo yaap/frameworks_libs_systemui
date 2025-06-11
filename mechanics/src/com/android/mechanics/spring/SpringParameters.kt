@@ -16,6 +16,7 @@
 
 package com.android.mechanics.spring
 
+import androidx.compose.ui.util.fastCoerceIn
 import androidx.compose.ui.util.lerp
 import androidx.compose.ui.util.packFloats
 import androidx.compose.ui.util.unpackFloat1
@@ -31,7 +32,7 @@ import kotlin.math.pow
  * @see SpringParameters function to create this value.
  */
 @JvmInline
-value class SpringParameters(private val packedValue: Long) {
+value class SpringParameters(val packedValue: Long) {
     val stiffness: Float
         get() = unpackFloat1(packedValue)
 
@@ -71,7 +72,7 @@ fun SpringParameters(stiffness: Float, dampingRatio: Float): SpringParameters {
  * The [fraction] is clamped to a `0..1` range.
  */
 fun lerp(start: SpringParameters, stop: SpringParameters, fraction: Float): SpringParameters {
-    val f = fraction.coerceIn(0f, 1f)
+    val f = fraction.fastCoerceIn(0f, 1f)
     val stiffness = start.stiffness.pow(1 - f) * stop.stiffness.pow(f)
     val dampingRatio = lerp(start.dampingRatio, stop.dampingRatio, f)
     return SpringParameters(packFloats(stiffness, dampingRatio))

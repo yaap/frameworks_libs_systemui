@@ -18,8 +18,12 @@ package com.android.app.tracing
 
 import android.annotation.SuppressLint
 import android.os.Trace
+import com.android.app.tracing.TrackGroupUtils.trackGroup
 import com.android.app.tracing.coroutines.traceCoroutine
 import java.util.concurrent.ThreadLocalRandom
+import kotlin.contracts.ExperimentalContracts
+import kotlin.contracts.InvocationKind
+import kotlin.contracts.contract
 
 /**
  * Writes a trace message to indicate that a given section of code has begun running __on the
@@ -88,7 +92,9 @@ internal fun endSlice() {
  * Run a block within a [Trace] section. Calls [Trace.beginSection] before and [Trace.endSection]
  * after the passed block.
  */
+@OptIn(ExperimentalContracts::class)
 public inline fun <T> traceSection(tag: String, block: () -> T): T {
+    contract { callsInPlace(block, InvocationKind.EXACTLY_ONCE) }
     val tracingEnabled = Trace.isEnabled()
     if (tracingEnabled) beginSlice(tag)
     return try {
@@ -104,7 +110,12 @@ public inline fun <T> traceSection(tag: String, block: () -> T): T {
  * Same as [traceSection], but the tag is provided as a lambda to help avoiding creating expensive
  * strings when not needed.
  */
+@OptIn(ExperimentalContracts::class)
 public inline fun <T> traceSection(tag: () -> String, block: () -> T): T {
+    contract {
+        callsInPlace(tag, InvocationKind.AT_MOST_ONCE)
+        callsInPlace(block, InvocationKind.EXACTLY_ONCE)
+    }
     val tracingEnabled = Trace.isEnabled()
     if (tracingEnabled) beginSlice(tag())
     return try {
@@ -114,6 +125,23 @@ public inline fun <T> traceSection(tag: () -> String, block: () -> T): T {
     }
 }
 
+/**
+ * Like [com.android.app.tracing.traceSection], but uses `crossinline` so we don't accidentally
+ * introduce non-local returns. This is less convenient to use, but it ensures we will not
+ * accidentally pass a suspending function to this method.
+ */
+@OptIn(ExperimentalContracts::class)
+internal inline fun <T> traceBlocking(sectionName: String, crossinline block: () -> T): T {
+    contract { callsInPlace(block, InvocationKind.EXACTLY_ONCE) }
+    Trace.traceBegin(Trace.TRACE_TAG_APP, sectionName)
+    return try {
+        block()
+    } finally {
+        Trace.traceEnd(Trace.TRACE_TAG_APP)
+    }
+}
+
+@OptIn(ExperimentalContracts::class)
 public object TraceUtils {
     public const val TAG: String = "TraceUtils"
     public const val DEFAULT_TRACK_NAME: String = "AsyncTraces"
@@ -180,18 +208,78 @@ public object TraceUtils {
     /**
      * Creates an async slice in a track with [trackName] while [block] runs.
      *
-     * This can be used to trace coroutine code. [method] will be the name of the slice, [trackName]
-     * of the track. The track is one of the rows visible in a perfetto trace inside the app
-     * process.
+     * This can be used to trace coroutine code. [sliceName] will be the name of the slice,
+     * [trackName] of the track. The track is one of the rows visible in a perfetto trace inside the
+     * app process.
      */
     @JvmStatic
-    public inline fun <T> traceAsync(trackName: String, method: String, block: () -> T): T {
+    public inline fun <T> traceAsync(trackName: String, sliceName: String, block: () -> T): T {
+        contract { callsInPlace(block, InvocationKind.EXACTLY_ONCE) }
+        return traceAsync(Trace.TRACE_TAG_APP, trackName, sliceName, block)
+    }
+
+    /** Creates an async slice in a track with [trackName] while [block] runs. */
+    @JvmStatic
+    public inline fun <T> traceAsync(
+        traceTag: Long,
+        trackName: String,
+        sliceName: String,
+        block: () -> T,
+    ): T {
+        contract { callsInPlace(block, InvocationKind.EXACTLY_ONCE) }
         val cookie = ThreadLocalRandom.current().nextInt()
-        Trace.asyncTraceForTrackBegin(Trace.TRACE_TAG_APP, trackName, method, cookie)
+        Trace.asyncTraceForTrackBegin(traceTag, trackName, sliceName, cookie)
         try {
             return block()
         } finally {
-            Trace.asyncTraceForTrackEnd(Trace.TRACE_TAG_APP, trackName, cookie)
+            Trace.asyncTraceForTrackEnd(traceTag, trackName, cookie)
         }
+    }
+
+    /** Creates an async slice in a track with [trackName] while [block] runs. */
+    @JvmStatic
+    public inline fun <T> traceAsync(
+        traceTag: Long,
+        trackName: String,
+        sliceName: () -> String,
+        block: () -> T,
+    ): T {
+        contract {
+            callsInPlace(sliceName, InvocationKind.AT_MOST_ONCE)
+            callsInPlace(block, InvocationKind.EXACTLY_ONCE)
+        }
+        val tracingEnabled = Trace.isEnabled()
+        return if (tracingEnabled) {
+            return traceAsync(traceTag, trackName, sliceName(), block)
+        } else {
+            block()
+        }
+    }
+
+    /** Starts an async slice, and returns a runnable that stops the slice. */
+    @JvmStatic
+    public fun traceAsyncClosable(
+        traceTag: Long = Trace.TRACE_TAG_APP,
+        trackName: String,
+        sliceName: String,
+    ): () -> Unit {
+        val cookie = ThreadLocalRandom.current().nextInt()
+        Trace.asyncTraceForTrackBegin(traceTag, trackName, sliceName, cookie)
+        return { Trace.asyncTraceForTrackEnd(traceTag, trackName, cookie) }
+    }
+
+    /** Starts an async slice, and returns a runnable that stops the slice. */
+    @JvmStatic
+    @JvmOverloads
+    public fun traceAsyncClosable(
+        traceTag: Long = Trace.TRACE_TAG_APP,
+        trackGroupName: String,
+        trackName: String,
+        sliceName: String,
+    ): () -> Unit {
+        val groupedTrackName = trackGroup(trackGroupName, trackName)
+        val cookie = ThreadLocalRandom.current().nextInt()
+        Trace.asyncTraceForTrackBegin(traceTag, groupedTrackName, sliceName, cookie)
+        return { Trace.asyncTraceForTrackEnd(traceTag, groupedTrackName, cookie) }
     }
 }

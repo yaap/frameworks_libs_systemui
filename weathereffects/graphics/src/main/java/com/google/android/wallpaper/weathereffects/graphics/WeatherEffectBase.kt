@@ -26,6 +26,7 @@ import android.util.SizeF
 import com.google.android.wallpaper.weathereffects.graphics.utils.GraphicsUtils
 import com.google.android.wallpaper.weathereffects.graphics.utils.MatrixUtils.calculateTransformDifference
 import com.google.android.wallpaper.weathereffects.graphics.utils.MatrixUtils.centerCropMatrix
+import com.google.android.wallpaper.weathereffects.graphics.utils.MatrixUtils.getScale
 import com.google.android.wallpaper.weathereffects.graphics.utils.MatrixUtils.invertAndTransposeMatrix
 import kotlin.random.Random
 
@@ -47,6 +48,7 @@ abstract class WeatherEffectBase(
     // Apply to weather components not rely on image textures
     // Should be identity matrix in editor, and only change when parallax applied in homescreen
     private val transformMatrixWeather: FloatArray = FloatArray(9)
+    protected var bitmapScale = getScale(centerCropMatrix)
     protected var elapsedTime: Float = 0f
 
     abstract val shader: RuntimeShader
@@ -56,6 +58,7 @@ abstract class WeatherEffectBase(
 
     override fun setMatrix(matrix: Matrix) {
         this.parallaxMatrix.set(matrix)
+        bitmapScale = getScale(parallaxMatrix)
         adjustCropping(surfaceSize)
     }
 
@@ -93,9 +96,9 @@ abstract class WeatherEffectBase(
         colorGradingShader.setFloatUniform("intensity", colorGradingIntensity * intensity)
     }
 
-    override fun setBitmaps(foreground: Bitmap?, background: Bitmap) {
+    override fun setBitmaps(foreground: Bitmap?, background: Bitmap): Boolean {
         if (this.foreground == foreground && this.background == background) {
-            return
+            return false
         }
         // Only when background changes, we can infer the bitmap set changes
         if (this.background != background) {
@@ -111,6 +114,7 @@ abstract class WeatherEffectBase(
                 SizeF(background.width.toFloat(), background.height.toFloat()),
             )
         parallaxMatrix.set(centerCropMatrix)
+        bitmapScale = getScale(centerCropMatrix)
         shader.setInputBuffer(
             "background",
             BitmapShader(this.background, Shader.TileMode.MIRROR, Shader.TileMode.MIRROR),
@@ -120,6 +124,7 @@ abstract class WeatherEffectBase(
             BitmapShader(this.foreground, Shader.TileMode.MIRROR, Shader.TileMode.MIRROR),
         )
         adjustCropping(surfaceSize)
+        return true
     }
 
     open fun updateTextureUniforms() {
@@ -132,5 +137,12 @@ abstract class WeatherEffectBase(
             "background",
             BitmapShader(background, Shader.TileMode.MIRROR, Shader.TileMode.MIRROR),
         )
+    }
+
+    companion object {
+        // When extracting the scale from the parallax matrix, there will be a very small difference
+        // due to floating-point precision.
+        // We use FLOAT_TOLERANCE to avoid triggering actions on these insignificant scale changes.
+        const val FLOAT_TOLERANCE = 0.0001F
     }
 }

@@ -78,17 +78,99 @@ flag {
 }
 
 flag {
-    name: "enable_launcher_icon_shapes"
-    namespace: "systemui"
-    description: "Enables launcher icon shapes customization"
-    bug: "348708061"
-}
-
-flag {
     name: "smartspace_sports_card_background"
     namespace: "systemui"
     description: "Enables Smartspace sports card background protection and related ui updates"
     bug: "380285747"
+    metadata {
+         purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "screenshot_context_url"
+    namespace: "systemui"
+    description: "Include optional app-provided context URL when sharing a screenshot."
+    bug: "242791070"
+}
+
+flag {
+  name: "status_bar_connected_displays"
+  namespace: "lse_desktop_experience"
+  description: "Shows the status bar on connected displays"
+  bug: "379264862"
+}
+
+flag {
+   name: "lockscreen_custom_clocks"
+   namespace: "systemui"
+   description: "Enable lockscreen custom clocks"
+   bug: "378486437"
+}
+
+flag {
+   name: "clock_reactive_variants"
+   namespace: "systemui"
+   description: "Add reactive variant fonts to some clocks"
+   bug: "343495953"
+}
+
+flag {
+   name: "clock_reactive_smartspace_layout"
+   namespace: "systemui"
+   description: "Smartspace layout logic change for reactive clocks"
+   bug: "343495953"
+}
+
+flag {
+    name: "extended_wallpaper_effects"
+    namespace: "systemui"
+    description: "Enables extended wallpaper effects"
+    bug: "334125919"
+}
+
+
+flag {
+    name: "use_preferred_image_editor"
+    namespace: "systemui"
+    description: "Prefer the editor in config_preferredScreenshotEditor if component is present/enabled on the system"
+    bug: "391401141"
+}
+
+flag {
+    name: "enable_lpp_squeeze_effect"
+    namespace: "systemui"
+    description: "Enables squeeze effect on power button long press launching Gemini"
+    bug: "396099245"
+}
+
+flag {
+  name: "cursor_hot_corner"
+  namespace: "systemui"
+  description: "Enables hot corner navigation by cursor"
+  bug: "397182595"
+}
+
+flag {
+    name: "smartspace_ui_update"
+    namespace: "systemui"
+    description: "Update Smartspace UI"
+    bug: "389741821"
+}
+
+flag {
+    name: "smartspace_ui_update_resources"
+    namespace: "systemui"
+    description: "Read-only flag for updating resources for Smartspace UI"
+    bug: "389741821"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "smartspace_remoteviews_intent_handler"
+    namespace: "systemui"
+    description: "Enables Smartspace RemoteViews intent handling on lockscreen"
+    bug: "399416038"
     metadata {
          purpose: PURPOSE_BUGFIX
     }

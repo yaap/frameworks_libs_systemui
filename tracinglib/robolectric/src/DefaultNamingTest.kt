@@ -14,185 +14,183 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
+
 package com.android.test.tracing.coroutines
 
 import android.platform.test.annotations.EnableFlags
-import com.android.app.tracing.coroutines.createCoroutineTracingContext
+import com.android.app.tracing.coroutines.asyncTraced
 import com.android.app.tracing.coroutines.flow.collectLatestTraced
 import com.android.app.tracing.coroutines.flow.collectTraced
 import com.android.app.tracing.coroutines.flow.filterTraced
-import com.android.app.tracing.coroutines.flow.flowName
 import com.android.app.tracing.coroutines.flow.mapTraced
 import com.android.app.tracing.coroutines.flow.transformTraced
 import com.android.app.tracing.coroutines.launchTraced
+import com.android.app.tracing.coroutines.withContextTraced
 import com.android.systemui.Flags.FLAG_COROUTINE_TRACING
-import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.shareIn
-import kotlinx.coroutines.newSingleThreadContext
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/** Tests behavior of default names, whether that's via stack walking or reflection */
+/** Tests behavior of default names using reflection */
 @EnableFlags(FLAG_COROUTINE_TRACING)
 class DefaultNamingTest : TestBase() {
 
-    override val extraCoroutineContext: CoroutineContext
-        get() = createCoroutineTracingContext("main", includeParentNames = true, strictMode = true)
-
-    fun namedCollectFun() {}
-
     @Test
-    fun collectTraced1() = runTest {
-        expect(1, "main:1^")
-        flow {
-                expect(2, "main:1^", "collect:DefaultNamingTest\$collectTraced1$1$4")
-                emit(21) // 21 * 2 = 42
-                expect(6, "main:1^", "collect:DefaultNamingTest\$collectTraced1$1$4")
-            }
-            .mapTraced("2x") {
-                expect(
-                    3,
-                    "main:1^",
-                    "collect:DefaultNamingTest\$collectTraced1$1$4",
-                    "map:2x:transform",
-                )
-                it * 2 // 42
-            }
-            .flowName("UNUSED_NAME") // unused because scope is unchanged
-            .filterTraced("mod2") {
-                expect(
-                    4,
-                    "main:1^",
-                    "collect:DefaultNamingTest\$collectTraced1$1$4",
-                    "map:2x:emit",
-                    "filter:mod2:predicate",
-                )
-                it % 2 == 0 // true
-            }
-            .collectTraced {
+    fun collectTraced1() {
+        val coldFlow =
+            flow {
+                    expect(2, "1^main", "collect:DefaultNamingTest\$collectTraced1$1$1")
+                    emit(21) // 21 * 2 = 42
+                    expect(6, "1^main", "collect:DefaultNamingTest\$collectTraced1$1$1")
+                }
+                .mapTraced("2x") {
+                    expect(3, "1^main", "collect:DefaultNamingTest\$collectTraced1$1$1", "2x")
+                    it * 2 // 42
+                }
+                .filterTraced("mod2") {
+                    expect(4, "1^main", "collect:DefaultNamingTest\$collectTraced1$1$1", "mod2")
+                    it % 2 == 0 // true
+                }
+        runTest(finalEvent = 7) {
+            expect(1, "1^main")
+            coldFlow.collectTraced {
                 assertEquals(42, it) // 21 * 2 = 42
                 expect(
                     5,
-                    "main:1^",
-                    "collect:DefaultNamingTest\$collectTraced1$1$4",
-                    "map:2x:emit",
-                    "filter:mod2:emit",
-                    "collect:DefaultNamingTest\$collectTraced1$1$4:emit",
+                    "1^main",
+                    "collect:DefaultNamingTest\$collectTraced1$1$1",
+                    "emit:DefaultNamingTest\$collectTraced1$1$1",
                 )
             }
-        finish(7, "main:1^")
+            expect(7, "1^main")
+        }
     }
 
     @Test
-    fun collectTraced2() = runTest {
-        expect(1, "main:1^") // top-level scope
-
-        flow {
-                expect(2, "main:1^:1^") // child scope used by `collectLatest {}`
-                emit(1) // should not get used by collectLatest {}
-                expect(6, "main:1^:1^")
-                emit(21) // 21 * 2 = 42
-                expect(10, "main:1^:1^")
-            }
-            .filterTraced("mod2") {
-                expect(listOf(3, 7), "main:1^:1^", "filter:mod2:predicate")
-                it % 2 == 1 // true
-            }
-            .mapTraced("2x") {
-                expect(listOf(4, 8), "main:1^:1^", "filter:mod2:emit", "map:2x:transform")
-                it * 2 // 42
-            }
-            // this name won't be used because it's not passed the scope used by mapLatest{}, which
-            // is an internal implementation detail in kotlinx
-            .flowName("UNUSED_NAME")
-            .collectLatestTraced {
-                expectEvent(listOf(5, 9))
-                delay(10)
-                assertEquals(42, it) // 21 * 2 = 42
-                expect(
-                    11,
-                    "main:1^:1^:2^",
-                    "collectLatest:DefaultNamingTest\$collectTraced2$1$4:action",
-                )
-            }
-        finish(12, "main:1^")
-    }
-
-    @Test
-    fun collectTraced3() = runTest {
-        expect(1, "main:1^") // top-level scope
-
-        val sharedFlow =
+    fun collectTraced2() {
+        val coldFlow =
             flow {
-                    expect(2, "main:1^:1^")
-                    delay(1)
-                    emit(22)
-                    expect(3, "main:1^:1^")
-                    delay(1)
-                    emit(32)
-                    expect(4, "main:1^:1^")
-                    delay(1)
-                    emit(42)
-                    expect(5, "main:1^:1^")
-                } // there is no API for passing a custom context to the new shared flow, so weg
-                // can't pass our custom child name using `nameCoroutine()`
-                .shareIn(this, SharingStarted.Eagerly, 4)
-
-        launchTraced("AAAA") {
-            sharedFlow.collectLatestTraced {
-                delay(10)
-                expect(
-                    6,
-                    "main:1^:2^AAAA:1^:3^",
-                    "collectLatest:DefaultNamingTest\$collectTraced3$1$1$1:action",
-                )
+                    expect(
+                        2,
+                        "1^main:1^",
+                        "collect:collectLatest:DefaultNamingTest\$collectTraced2$1$1",
+                    ) // child scope used by `collectLatest {}`
+                    emit(1) // should not get used by collectLatest {}
+                    expect(
+                        6,
+                        "1^main:1^",
+                        "collect:collectLatest:DefaultNamingTest\$collectTraced2$1$1",
+                    )
+                    emit(21) // 21 * 2 = 42
+                    expect(
+                        10,
+                        "1^main:1^",
+                        "collect:collectLatest:DefaultNamingTest\$collectTraced2$1$1",
+                    )
+                }
+                .filterTraced("mod2") {
+                    expect(
+                        listOf(3, 7),
+                        "1^main:1^",
+                        "collect:collectLatest:DefaultNamingTest\$collectTraced2$1$1",
+                        "mod2",
+                    )
+                    it % 2 == 1 // true
+                }
+                .mapTraced("2x") {
+                    expect(
+                        listOf(4, 8),
+                        "1^main:1^",
+                        "collect:collectLatest:DefaultNamingTest\$collectTraced2$1$1",
+                        "2x",
+                    )
+                    it * 2 // 42
+                }
+        runTest(finalEvent = 12) {
+            expect(1, "1^main") // top-level scope
+            coldFlow.collectLatestTraced {
+                expectEvent(listOf(5, 9))
+                delay(50)
+                assertEquals(42, it) // 21 * 2 = 42
+                expect(11, "1^main:1^:2^", "DefaultNamingTest\$collectTraced2$1$1")
             }
+            expect(12, "1^main")
         }
-        launchTraced("BBBB") {
-            sharedFlow.collectLatestTraced {
-                delay(40)
-                assertEquals(42, it)
-                expect(
-                    7,
-                    "main:1^:3^BBBB:1^:3^",
-                    "collectLatest:DefaultNamingTest\$collectTraced3$1$2$1:action",
-                )
-            }
-        }
-
-        delay(50)
-        finish(8, "main:1^")
-        cancel()
     }
 
     @Test
-    fun collectTraced4() = runTest {
-        expect(1, "main:1^")
-        flow {
-                expect(2, "main:1^", "collect:DefaultNamingTest\$collectTraced4$1$2")
-                emit(42)
-                expect(4, "main:1^", "collect:DefaultNamingTest\$collectTraced4$1$2")
+    fun collectTraced3() =
+        runTest(finalEvent = 8) {
+            expect(1, "1^main") // top-level scope
+
+            val sharedFlow =
+                flow {
+                        expect(2, "1^main:1^")
+                        delay(1)
+                        emit(22)
+                        expect(3, "1^main:1^")
+                        delay(1)
+                        emit(32)
+                        expect(4, "1^main:1^")
+                        delay(1)
+                        emit(42)
+                        expect(5, "1^main:1^")
+                    } // there is no API for passing a custom context to the new shared flow, so we
+                    // can't pass our custom child name using `CoroutineTraceName()`
+                    .shareIn(this, SharingStarted.Eagerly, 4)
+
+            launchTraced("AAAA") {
+                sharedFlow.collectLatestTraced {
+                    delay(10)
+                    expect(6, "1^main:2^AAAA:1^:3^", "DefaultNamingTest\$collectTraced3$1$1$1")
+                }
             }
-            .collectTraced {
-                assertEquals(42, it)
-                expect(
-                    3,
-                    "main:1^",
-                    "collect:DefaultNamingTest\$collectTraced4$1$2",
-                    "collect:DefaultNamingTest\$collectTraced4$1$2:emit",
-                )
+            launchTraced("BBBB") {
+                sharedFlow.collectLatestTraced {
+                    delay(40)
+                    assertEquals(42, it)
+                    expect(7, "1^main:3^BBBB:1^:3^", "DefaultNamingTest\$collectTraced3$1$2$1")
+                }
             }
-        finish(5, "main:1^")
-    }
+
+            delay(70)
+            expect(8, "1^main")
+            coroutineContext.job.cancelChildren()
+        }
+
+    @Test
+    fun collectTraced4() =
+        runTest(finalEvent = 5) {
+            expect(1, "1^main")
+            flow {
+                    expect(2, "1^main", "collect:DefaultNamingTest\$collectTraced4$1$2")
+                    emit(42)
+                    expect(4, "1^main", "collect:DefaultNamingTest\$collectTraced4$1$2")
+                }
+                .collectTraced {
+                    assertEquals(42, it)
+                    expect(
+                        3,
+                        "1^main",
+                        "collect:DefaultNamingTest\$collectTraced4$1$2",
+                        "emit:DefaultNamingTest\$collectTraced4$1$2",
+                    )
+                }
+            expect(5, "1^main")
+        }
 
     @Test
     fun collectTraced5_localFun() {
@@ -200,20 +198,20 @@ class DefaultNamingTest : TestBase() {
             assertEquals(42, value)
             expect(
                 3,
-                "main:1^",
+                "1^main",
                 "collect:DefaultNamingTest\$collectTraced5_localFun$1$2",
-                "collect:DefaultNamingTest\$collectTraced5_localFun$1$2:emit",
+                "emit:DefaultNamingTest\$collectTraced5_localFun$1$2",
             )
         }
-        return runTest {
-            expect(1, "main:1^")
+        return runTest(finalEvent = 5) {
+            expect(1, "1^main")
             flow {
-                    expect(2, "main:1^", "collect:DefaultNamingTest\$collectTraced5_localFun$1$2")
+                    expect(2, "1^main", "collect:DefaultNamingTest\$collectTraced5_localFun$1$2")
                     emit(42)
-                    expect(4, "main:1^", "collect:DefaultNamingTest\$collectTraced5_localFun$1$2")
+                    expect(4, "1^main", "collect:DefaultNamingTest\$collectTraced5_localFun$1$2")
                 }
                 .collectTraced(::localFun)
-            finish(5, "main:1^")
+            expect(5, "1^main")
         }
     }
 
@@ -221,143 +219,171 @@ class DefaultNamingTest : TestBase() {
         assertEquals(42, value)
         expect(
             3,
-            "main:1^",
+            "1^main",
             "collect:DefaultNamingTest\$collectTraced6_memberFun$1$2",
-            "collect:DefaultNamingTest\$collectTraced6_memberFun$1$2:emit",
+            "emit:DefaultNamingTest\$collectTraced6_memberFun$1$2",
         )
     }
 
     @Test
-    fun collectTraced6_memberFun() = runTest {
-        expect(1, "main:1^")
-        flow {
-                expect(2, "main:1^", "collect:DefaultNamingTest\$collectTraced6_memberFun$1$2")
-                emit(42)
-                expect(4, "main:1^", "collect:DefaultNamingTest\$collectTraced6_memberFun$1$2")
-            }
-            .collectTraced(::memberFun)
-        finish(5, "main:1^")
-    }
-
-    @Test
-    fun collectTraced7_topLevelFun() = runTest {
-        expect(1, "main:1^")
-        flow {
-                expect(2, "main:1^", "collect:DefaultNamingTest\$collectTraced7_topLevelFun$1$2")
-                emit(42)
-                expect(3, "main:1^", "collect:DefaultNamingTest\$collectTraced7_topLevelFun$1$2")
-            }
-            .collectTraced(::topLevelFun)
-        finish(4, "main:1^")
-    }
-
-    @Test
-    fun collectTraced8_localFlowObject() = runTest {
-        expect(1, "main:1^")
-        val flowObj =
-            object : Flow<Int> {
-                override suspend fun collect(collector: FlowCollector<Int>) {
-                    expect(
-                        2,
-                        "main:1^",
-                        "collect:DefaultNamingTest\$collectTraced8_localFlowObject$1$1",
-                    )
-                    collector.emit(42)
-                    expect(
-                        4,
-                        "main:1^",
-                        "collect:DefaultNamingTest\$collectTraced8_localFlowObject$1$1",
-                    )
+    fun collectTraced6_memberFun() =
+        runTest(finalEvent = 5) {
+            expect(1, "1^main")
+            flow {
+                    expect(2, "1^main", "collect:DefaultNamingTest\$collectTraced6_memberFun$1$2")
+                    emit(42)
+                    expect(4, "1^main", "collect:DefaultNamingTest\$collectTraced6_memberFun$1$2")
                 }
-            }
-        flowObj.collectTraced {
-            assertEquals(42, it)
-            expect(
-                3,
-                "main:1^",
-                "collect:DefaultNamingTest\$collectTraced8_localFlowObject$1$1",
-                "collect:DefaultNamingTest\$collectTraced8_localFlowObject$1$1:emit",
-            )
+                .collectTraced(::memberFun)
+            expect(5, "1^main")
         }
-        finish(5, "main:1^")
-    }
 
     @Test
-    fun collectTraced9_flowObjectWithClassName() = runTest {
-        expect(1, "main:1^")
-        FlowWithName(this@DefaultNamingTest).collectTraced {
-            assertEquals(42, it)
-            expect(
-                3,
-                "main:1^",
-                "collect:DefaultNamingTest\$collectTraced9_flowObjectWithClassName$1$1",
-                "collect:DefaultNamingTest\$collectTraced9_flowObjectWithClassName$1$1:emit",
-            )
+    fun collectTraced7_topLevelFun() =
+        runTest(finalEvent = 4) {
+            expect(1, "1^main")
+            flow {
+                    expect(2, "1^main", "collect:DefaultNamingTest\$collectTraced7_topLevelFun$1$2")
+                    emit(42)
+                    expect(3, "1^main", "collect:DefaultNamingTest\$collectTraced7_topLevelFun$1$2")
+                }
+                .collectTraced(::topLevelFun)
+            expect(4, "1^main")
         }
-        finish(5, "main:1^")
-    }
 
     @Test
-    fun collectTraced10_flowCollectorObjectWithClassName() = runTest {
-        expect(1, "main:1^")
-        flow {
-                expect(2, "main:1^", "collect:FlowCollectorWithName")
-                emit(42)
-                expect(4, "main:1^", "collect:FlowCollectorWithName")
-            }
-            .collectTraced(FlowCollectorWithName(this@DefaultNamingTest))
-        finish(5, "main:1^")
-    }
-
-    @Test
-    fun collectTraced11_transform() = runTest {
-        expect(1, "main:1^")
-        flow {
-                expect(2, "main:1^", "collect:COLLECT")
-                emit(42)
-                expect(7, "main:1^", "collect:COLLECT")
-            }
-            .transformTraced("TRANSFORM") {
-                expect(3, "main:1^", "collect:COLLECT", "TRANSFORM:emit")
-                emit(it)
-                emit(it * 2)
-                emit(it * 4)
-            }
-            .collectTraced("COLLECT") {
+    fun collectTraced8_localFlowObject() =
+        runTest(finalEvent = 5) {
+            expect(1, "1^main")
+            val flowObj =
+                object : Flow<Int> {
+                    override suspend fun collect(collector: FlowCollector<Int>) {
+                        expect(
+                            2,
+                            "1^main",
+                            "collect:DefaultNamingTest\$collectTraced8_localFlowObject$1$1",
+                        )
+                        collector.emit(42)
+                        expect(
+                            4,
+                            "1^main",
+                            "collect:DefaultNamingTest\$collectTraced8_localFlowObject$1$1",
+                        )
+                    }
+                }
+            flowObj.collectTraced {
+                assertEquals(42, it)
                 expect(
-                    listOf(4, 5, 6),
-                    "main:1^",
-                    "collect:COLLECT",
-                    "TRANSFORM:emit",
-                    "collect:COLLECT:emit",
+                    3,
+                    "1^main",
+                    "collect:DefaultNamingTest\$collectTraced8_localFlowObject$1$1",
+                    "emit:DefaultNamingTest\$collectTraced8_localFlowObject$1$1",
                 )
             }
-        finish(8, "main:1^")
-    }
+            expect(5, "1^main")
+        }
 
-    @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
+    @Test
+    fun collectTraced9_flowObjectWithClassName() =
+        runTest(finalEvent = 5) {
+            expect(1, "1^main")
+            FlowWithName(this@DefaultNamingTest).collectTraced {
+                assertEquals(42, it)
+                expect(
+                    3,
+                    "1^main",
+                    "collect:DefaultNamingTest\$collectTraced9_flowObjectWithClassName$1$1",
+                    "emit:DefaultNamingTest\$collectTraced9_flowObjectWithClassName$1$1",
+                )
+            }
+            expect(5, "1^main")
+        }
+
+    @Test
+    fun collectTraced10_flowCollectorObjectWithClassName() =
+        runTest(finalEvent = 5) {
+            expect(1, "1^main")
+            flow {
+                    expect(2, "1^main", "collect:FlowCollectorWithName")
+                    emit(42)
+                    expect(4, "1^main", "collect:FlowCollectorWithName")
+                }
+                .collectTraced(FlowCollectorWithName(this@DefaultNamingTest))
+            expect(5, "1^main")
+        }
+
+    @Test
+    fun collectTraced11_transform() =
+        runTest(finalEvent = 8) {
+            expect(1, "1^main")
+            flow {
+                    expect(2, "1^main", "collect:COLLECT")
+                    emit(42)
+                    expect(7, "1^main", "collect:COLLECT")
+                }
+                .transformTraced("TRANSFORM") {
+                    expect(3, "1^main", "collect:COLLECT", "TRANSFORM")
+                    emit(it)
+                    emit(it * 2)
+                    emit(it * 4)
+                }
+                .collectTraced("COLLECT") {
+                    expect(
+                        listOf(4, 5, 6),
+                        "1^main",
+                        "collect:COLLECT",
+                        "TRANSFORM",
+                        "emit:COLLECT",
+                    )
+                }
+            expect(8, "1^main")
+        }
+
     @Test
     fun collectTraced12_badTransform() =
         runTest(
-            expectedException = { e ->
-                return@runTest e is java.lang.IllegalStateException &&
+            finalEvent = 2,
+            isExpectedException = { e ->
+                e is java.lang.IllegalStateException &&
                     (e.message?.startsWith("Flow invariant is violated") ?: false)
-            }
-        ) {
-            val thread1 = newSingleThreadContext("thread-#1")
-            expect(1, "main:1^")
-            flow {
-                    expect(2, "main:1^", "collect:COLLECT")
-                    emit(42)
-                    expect(4, "main:1^", "collect:COLLECT")
-                }
-                .transformTraced("TRANSFORM") {
-                    // SHOULD THROW AN EXCEPTION:
-                    withContext(thread1) { emit(it * 2) }
-                }
-                .collectTraced("COLLECT") {}
-            finish(5, "main:1^")
+            },
+            block = {
+                val thread1 = bgThread1
+                expect(1, "1^main")
+                flow {
+                        expect(2, "1^main", "collect:COLLECT")
+                        emit(42)
+                    }
+                    .transformTraced("TRANSFORM") {
+                        // throws IllegalStateException:
+                        withContext(thread1) { emit(it * 2) } // <-- Flow invariant is violated
+                    }
+                    .collectTraced("COLLECT") {}
+            },
+        )
+
+    @Test
+    fun coroutineBuilder_defaultNames() {
+        val localFun: suspend CoroutineScope.() -> Unit = {
+            expectAny(
+                arrayOf("1^main:4^DefaultNamingTest\$coroutineBuilder_defaultNames\$localFun$1"),
+                arrayOf("1^main", "DefaultNamingTest\$coroutineBuilder_defaultNames\$localFun$1"),
+                arrayOf("1^main:2^DefaultNamingTest\$coroutineBuilder_defaultNames\$localFun$1"),
+            )
         }
+        runTest(totalEvents = 6) {
+            launchTraced { expect("1^main:1^DefaultNamingTest\$coroutineBuilder_defaultNames$1$1") }
+                .join()
+            launchTraced(block = localFun).join()
+            asyncTraced { expect("1^main:3^DefaultNamingTest\$coroutineBuilder_defaultNames$1$2") }
+                .await()
+            asyncTraced(block = localFun).await()
+            withContextTraced(context = EmptyCoroutineContext) {
+                expect("1^main", "DefaultNamingTest\$coroutineBuilder_defaultNames$1$3")
+            }
+            withContextTraced(context = EmptyCoroutineContext, block = localFun)
+        }
+    }
 }
 
 fun topLevelFun(value: Int) {
@@ -368,13 +394,13 @@ class FlowWithName(private val test: TestBase) : Flow<Int> {
     override suspend fun collect(collector: FlowCollector<Int>) {
         test.expect(
             2,
-            "main:1^",
+            "1^main",
             "collect:DefaultNamingTest\$collectTraced9_flowObjectWithClassName$1$1",
         )
         collector.emit(42)
         test.expect(
             4,
-            "main:1^",
+            "1^main",
             "collect:DefaultNamingTest\$collectTraced9_flowObjectWithClassName$1$1",
         )
     }
@@ -383,11 +409,6 @@ class FlowWithName(private val test: TestBase) : Flow<Int> {
 class FlowCollectorWithName(private val test: TestBase) : FlowCollector<Int> {
     override suspend fun emit(value: Int) {
         assertEquals(42, value)
-        test.expect(
-            3,
-            "main:1^",
-            "collect:FlowCollectorWithName",
-            "collect:FlowCollectorWithName:emit",
-        )
+        test.expect(3, "1^main", "collect:FlowCollectorWithName", "emit:FlowCollectorWithName")
     }
 }

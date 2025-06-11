@@ -24,11 +24,13 @@ import android.content.Context;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.media.permission.SafeCloseable;
+import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.os.Trace;
 import android.text.TextUtils;
+import android.util.Log;
 import android.util.SparseArray;
 import android.view.View;
 import android.view.ViewGroup;
@@ -52,6 +54,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -60,6 +63,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 /**
  * Utility class for capturing view data every frame
@@ -77,6 +81,10 @@ public abstract class ViewCapture {
 
     // Number of frames to keep in memory
     private final int mMemorySize;
+
+    // Number of ViewPropertyRef to preallocate per window
+    private final int mInitPoolSize;
+
     protected static final int DEFAULT_MEMORY_SIZE = 2000;
     // Initial size of the reference pool. This is at least be 5 * total number of views in
     // Launcher. This allows the first free frames avoid object allocation during view capture.
@@ -84,18 +92,19 @@ public abstract class ViewCapture {
 
     public static final LooperExecutor MAIN_EXECUTOR = new LooperExecutor(Looper.getMainLooper());
 
-    private final List<WindowListener> mListeners = new ArrayList<>();
+    private final List<WindowListener> mListeners = Collections.synchronizedList(new ArrayList<>());
 
     protected final Executor mBgExecutor;
 
-    // Pool used for capturing view tree on the UI thread.
-    private ViewPropertyRef mPool = new ViewPropertyRef();
     private boolean mIsEnabled = true;
+
+    @VisibleForTesting
+    public boolean mIsStarted = false;
 
     protected ViewCapture(int memorySize, int initPoolSize, Executor bgExecutor) {
         mMemorySize = memorySize;
         mBgExecutor = bgExecutor;
-        mBgExecutor.execute(() -> initPool(initPoolSize));
+        mInitPoolSize = initPoolSize;
     }
 
     public static LooperExecutor createAndStartNewLooperExecutor(String name, int priority) {
@@ -104,29 +113,10 @@ public abstract class ViewCapture {
         return new LooperExecutor(thread.getLooper());
     }
 
-    @UiThread
-    private void addToPool(ViewPropertyRef start, ViewPropertyRef end) {
-        end.next = mPool;
-        mPool = start;
-    }
-
-    @WorkerThread
-    private void initPool(int initPoolSize) {
-        ViewPropertyRef start = new ViewPropertyRef();
-        ViewPropertyRef current = start;
-
-        for (int i = 0; i < initPoolSize; i++) {
-            current.next = new ViewPropertyRef();
-            current = current.next;
-        }
-
-        ViewPropertyRef finalCurrent = current;
-        MAIN_EXECUTOR.execute(() -> addToPool(start, finalCurrent));
-    }
-
     /**
      * Attaches the ViewCapture to the provided window and returns a handle to detach the listener
      */
+    @AnyThread
     @NonNull
     public SafeCloseable startCapture(@NonNull Window window) {
         String title = window.getAttributes().getTitle().toString();
@@ -138,11 +128,18 @@ public abstract class ViewCapture {
      * Attaches the ViewCapture to the provided window and returns a handle to detach the listener.
      * Verifies that ViewCapture is enabled before actually attaching an onDrawListener.
      */
+    @AnyThread
     @NonNull
     public SafeCloseable startCapture(@NonNull View view, @NonNull String name) {
+        mIsStarted = true;
         WindowListener listener = new WindowListener(view, name);
-        if (mIsEnabled) MAIN_EXECUTOR.execute(listener::attachToRoot);
+
+        if (mIsEnabled) {
+            listener.attachToRoot();
+        }
+
         mListeners.add(listener);
+
         view.getContext().registerComponentCallbacks(listener);
 
         return () -> {
@@ -150,6 +147,7 @@ public abstract class ViewCapture {
                 listener.mRoot.getContext().unregisterComponentCallbacks(listener);
             }
             mListeners.remove(listener);
+
             listener.detachFromRoot();
         };
     }
@@ -164,16 +162,22 @@ public abstract class ViewCapture {
      * are still technically enabled to allow for dumping.
      */
     @VisibleForTesting
+    @AnyThread
     public void stopCapture(@NonNull View rootView) {
+        mIsStarted = false;
         mListeners.forEach(it -> {
             if (rootView == it.mRoot) {
-                it.mRoot.getViewTreeObserver().removeOnDrawListener(it);
-                it.mRoot = null;
+                runOnUiThread(() -> {
+                    if (it.mRoot != null) {
+                        it.mRoot.getViewTreeObserver().removeOnDrawListener(it);
+                        it.mRoot = null;
+                    }
+                }, it.mRoot);
             }
         });
     }
 
-    @UiThread
+    @AnyThread
     protected void enableOrDisableWindowListeners(boolean isEnabled) {
         mIsEnabled = isEnabled;
         mListeners.forEach(WindowListener::detachFromRoot);
@@ -206,7 +210,7 @@ public abstract class ViewCapture {
     }
 
     private static List<String> toStringList(List<Class> classList) {
-        return classList.stream().map(Class::getName).toList();
+        return classList.stream().map(Class::getName).collect(Collectors.toList());
     }
 
     public CompletableFuture<Optional<MotionWindowData>> getDumpTask(View view) {
@@ -223,15 +227,38 @@ public abstract class ViewCapture {
     private CompletableFuture<List<WindowData>> getWindowData(Context context,
             ArrayList<Class> outClassList, Predicate<WindowListener> filter) {
         ViewIdProvider idProvider = new ViewIdProvider(context.getResources());
-        return CompletableFuture.supplyAsync(() ->
-                mListeners.stream().filter(filter).toList(), MAIN_EXECUTOR).thenApplyAsync(it ->
-                        it.stream().map(l -> l.dumpToProto(idProvider, outClassList)).toList(),
-                mBgExecutor);
+        return CompletableFuture.supplyAsync(
+                () -> mListeners.stream()
+                        .filter(filter)
+                        .collect(Collectors.toList()),
+                MAIN_EXECUTOR).thenApplyAsync(
+                        it -> it.stream()
+                                .map(l -> l.dumpToProto(idProvider, outClassList))
+                                .collect(Collectors.toList()),
+                        mBgExecutor);
     }
 
     @WorkerThread
     protected void onCapturedViewPropertiesBg(long elapsedRealtimeNanos, String windowName,
             ViewPropertyRef startFlattenedViewTree) {
+    }
+
+    @AnyThread
+    void runOnUiThread(Runnable action, View view) {
+        if (view == null) {
+            // Corner case. E.g.: the capture is stopped (root view set to null),
+            // but the bg thread is still processing work.
+            Log.i(TAG, "Skipping run on UI thread. Provided view == null.");
+            return;
+        }
+
+        Handler handlerUi = view.getHandler();
+        if (handlerUi != null && handlerUi.getLooper().getThread() == Thread.currentThread()) {
+            action.run();
+            return;
+        }
+
+        view.post(action);
     }
 
     /**
@@ -283,6 +310,8 @@ public abstract class ViewCapture {
         public View mRoot;
         public final String name;
 
+        // Pool used for capturing view tree on the UI thread.
+        private ViewPropertyRef mPool = new ViewPropertyRef();
         private final ViewPropertyRef mViewPropertyRef = new ViewPropertyRef();
 
         private int mFrameIndexBg = -1;
@@ -297,6 +326,7 @@ public abstract class ViewCapture {
         WindowListener(View view, String name) {
             mRoot = view;
             this.name = name;
+            initPool(mInitPoolSize);
         }
 
         /**
@@ -306,21 +336,27 @@ public abstract class ViewCapture {
          * thread via mExecutor.
          */
         @Override
+        @UiThread
         public void onDraw() {
             Trace.beginSection("vc#onDraw");
-            captureViewTree(mRoot, mViewPropertyRef);
-            ViewPropertyRef captured = mViewPropertyRef.next;
-            if (captured != null) {
-                captured.elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos();
-
-                // Main thread writes volatile field:
-                // guarantee that variable changes prior the field write are visible to bg thread
-                captured.volatileCallback = mCaptureCallback;
-
-                mBgExecutor.execute(captured);
+            try {
+                View root = mRoot;
+                if (root == null) {
+                    // Handle the corner case where another (non-UI) thread
+                    // concurrently stopped the capture and set mRoot = null
+                    return;
+                }
+                captureViewTree(root, mViewPropertyRef);
+                ViewPropertyRef captured = mViewPropertyRef.next;
+                if (captured != null) {
+                    captured.callback = mCaptureCallback;
+                    captured.elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos();
+                    mBgExecutor.execute(captured);
+                }
+                mIsFirstFrame = false;
+            } finally {
+                Trace.endSection();
             }
-            mIsFirstFrame = false;
-            Trace.endSection();
         }
 
         /**
@@ -401,7 +437,7 @@ public abstract class ViewCapture {
                     // The compiler will complain about using a non-final variable from
                     // an outer class in a lambda if we pass in 'end' directly.
                     final ViewPropertyRef finalEnd = end;
-                    MAIN_EXECUTOR.execute(() -> addToPool(start, finalEnd));
+                    runOnUiThread(() -> addToPool(start, finalEnd), mRoot);
                     break;
                 }
                 end = end.next;
@@ -413,6 +449,7 @@ public abstract class ViewCapture {
             Trace.endSection();
         }
 
+        @WorkerThread
         private @Nullable ViewPropertyRef findInLastFrame(int hashCode) {
             int lastFrameIndex = (mFrameIndexBg == 0) ? mMemorySize - 1 : mFrameIndexBg - 1;
             ViewPropertyRef viewPropertyRef = mNodesBg[lastFrameIndex];
@@ -422,35 +459,72 @@ public abstract class ViewCapture {
             return viewPropertyRef;
         }
 
+        private void initPool(int initPoolSize) {
+            ViewPropertyRef start = new ViewPropertyRef();
+            ViewPropertyRef current = start;
+
+            for (int i = 0; i < initPoolSize; i++) {
+                current.next = new ViewPropertyRef();
+                current = current.next;
+            }
+
+            ViewPropertyRef finalCurrent = current;
+            addToPool(start, finalCurrent);
+        }
+
+        private void addToPool(ViewPropertyRef start, ViewPropertyRef end) {
+            end.next = mPool;
+            mPool = start;
+        }
+
+        @UiThread
+        private ViewPropertyRef getFromPool() {
+            ViewPropertyRef ref = mPool;
+            if (ref != null) {
+                mPool = ref.next;
+                ref.next = null;
+            } else {
+                ref = new ViewPropertyRef();
+            }
+            return ref;
+        }
+
+        @AnyThread
         void attachToRoot() {
             if (mRoot == null) return;
             mIsActive = true;
-            if (mRoot.isAttachedToWindow()) {
-                safelyEnableOnDrawListener();
-            } else {
-                mRoot.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
-                    @Override
-                    public void onViewAttachedToWindow(View v) {
-                        if (mIsActive) {
-                            safelyEnableOnDrawListener();
+            runOnUiThread(() -> {
+                if (mRoot.isAttachedToWindow()) {
+                    safelyEnableOnDrawListener();
+                } else {
+                    mRoot.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+                        @Override
+                        public void onViewAttachedToWindow(View v) {
+                            if (mIsActive) {
+                                safelyEnableOnDrawListener();
+                            }
+                            mRoot.removeOnAttachStateChangeListener(this);
                         }
-                        mRoot.removeOnAttachStateChangeListener(this);
-                    }
 
-                    @Override
-                    public void onViewDetachedFromWindow(View v) {
-                    }
-                });
-            }
+                        @Override
+                        public void onViewDetachedFromWindow(View v) {
+                        }
+                    });
+                }
+            }, mRoot);
         }
 
+        @AnyThread
         void detachFromRoot() {
             mIsActive = false;
-            if (mRoot != null) {
-                mRoot.getViewTreeObserver().removeOnDrawListener(this);
-            }
+            runOnUiThread(() -> {
+                if (mRoot != null) {
+                    mRoot.getViewTreeObserver().removeOnDrawListener(this);
+                }
+            }, mRoot);
         }
 
+        @UiThread
         private void safelyEnableOnDrawListener() {
             if (mRoot != null) {
                 mRoot.getViewTreeObserver().removeOnDrawListener(this);
@@ -474,15 +548,9 @@ public abstract class ViewCapture {
             return builder.build();
         }
 
+        @UiThread
         private ViewPropertyRef captureViewTree(View view, ViewPropertyRef start) {
-            ViewPropertyRef ref;
-            if (mPool != null) {
-                ref = mPool;
-                mPool = mPool.next;
-                ref.next = null;
-            } else {
-                ref = new ViewPropertyRef();
-            }
+            ViewPropertyRef ref = getFromPool();
             start.next = ref;
             if (view instanceof ViewGroup) {
                 ViewGroup parent = (ViewGroup) view;
@@ -556,11 +624,9 @@ public abstract class ViewCapture {
 
         public ViewPropertyRef next;
 
+        public Consumer<ViewPropertyRef> callback = null;
         public long elapsedRealtimeNanos = 0;
 
-        // Volatile field to establish happens-before relationship between main and bg threads
-        // (see JSR-133: Java Memory Model and Thread Specification)
-        public volatile Consumer<ViewPropertyRef> volatileCallback = null;
 
         public void transferFrom(View in) {
             view = in;
@@ -657,10 +723,8 @@ public abstract class ViewCapture {
 
         @Override
         public void run() {
-            // Bg thread reads volatile field:
-            // guarantee that variable changes in main thread prior the field write are visible
-            Consumer<ViewPropertyRef> oldCallback = volatileCallback;
-            volatileCallback = null;
+            Consumer<ViewPropertyRef> oldCallback = callback;
+            callback = null;
             if (oldCallback != null) {
                 oldCallback.accept(this);
             }
