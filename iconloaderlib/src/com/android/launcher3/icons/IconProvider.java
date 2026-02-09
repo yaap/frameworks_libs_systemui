@@ -270,7 +270,7 @@ public class IconProvider {
      */
     public void updateSystemState() {
         mSystemState = mContext.getResources().getConfiguration().getLocales().toLanguageTags()
-                + "," + Build.VERSION.INCREMENTAL;
+                + "," + Build.VERSION.SDK_INT;
     }
 
     /**
