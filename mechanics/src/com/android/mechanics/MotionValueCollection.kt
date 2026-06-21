@@ -25,9 +25,6 @@ import androidx.compose.runtime.mutableStateSetOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
-import androidx.compose.ui.util.trace
-import androidx.compose.ui.util.traceValue
-import com.android.mechanics.MotionValue.Companion.StableThresholdSpatial
 import com.android.mechanics.debug.DebugInspector
 import com.android.mechanics.debug.FrameData
 import com.android.mechanics.impl.Computations
@@ -39,9 +36,6 @@ import com.android.mechanics.spec.SegmentData
 import com.android.mechanics.spec.SegmentKey
 import com.android.mechanics.spec.SemanticKey
 import com.android.mechanics.spring.SpringState
-import java.util.concurrent.atomic.AtomicInteger
-import kotlin.time.Duration
-import kotlin.time.measureTime
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.DisposableHandle
 import kotlinx.coroutines.flow.first
@@ -61,7 +55,7 @@ sealed interface ManagedMotionValue : MotionValueState, DisposableHandle
 class MotionValueCollection(
     internal val input: () -> Float,
     internal val gestureContext: GestureContext,
-    internal val stableThreshold: Float = StableThresholdSpatial,
+    internal val stableThreshold: Float = MotionValue.StableThresholdEffect,
     val label: String? = null,
 ) {
     private val managedComputations = mutableStateSetOf<ManagedMotionComputation>()
@@ -78,36 +72,6 @@ class MotionValueCollection(
                 it.onActivate()
             }
             managedComputations.add(it)
-        }
-    }
-
-    /**
-     * Conditionally wraps the execution of a [block] in a performance trace.
-     *
-     * The primary advantage of this helper is lazy evaluation. The trace message from
-     * [onTraceStart] is not computed and no `try-finally` block is entered unless tracing is
-     * [enabled]. This helps to avoid performance penalties in production builds where tracing is
-     * often turned off.
-     *
-     * @param enabled A boolean flag to enable or disable tracing.
-     * @param onTraceStart A lambda that returns the trace section name. Only invoked if [enabled]
-     *   is true.
-     * @param onTraceEnd A lambda that executes after the block has finished. Only invoked if
-     *   [enabled] is true.
-     * @param block The code block to be executed and traced.
-     */
-    private inline fun trace(
-        enabled: Boolean,
-        onTraceStart: () -> String,
-        onTraceEnd: (Duration) -> Unit = {},
-        block: () -> Unit,
-    ) {
-        if (enabled) {
-            val duration = measureTime { trace(sectionName = onTraceStart(), block = block) }
-
-            onTraceEnd(duration)
-        } else {
-            block()
         }
     }
 
@@ -144,43 +108,26 @@ class MotionValueCollection(
                     withFrameNanos { frameTimeNanos ->
                         frameCount++
 
-                        trace(
-                            enabled = isTraceEnabled,
-                            onTraceStart = {
-                                val prefix = "MotionValueCollection($label)"
-                                val unstable = managedComputations.count { !it.isStable }
-                                val all = managedComputations.size
-                                traceValue("$prefix:unstable", unstable.toLong())
-                                traceValue("$prefix:all", all.toLong())
+                        lastFrameTimeNanos = currentAnimationTimeNanos
+                        lastInput = currentInput
+                        lastDirection = currentDirection
+                        lastGestureDragOffset = currentGestureDragOffset
 
-                                "$prefix withFrameNanos f:$frameCount ($unstable/$all)"
-                            },
-                            onTraceEnd = {
-                                val prefix = "MotionValueCollection($label)"
-                                traceValue("$prefix:duration", it.inWholeMicroseconds)
-                            },
+                        currentAnimationTimeNanos = frameTimeNanos
+                        currentInput = input.invoke()
+                        currentDirection = gestureContext.direction
+                        currentGestureDragOffset = gestureContext.dragOffset
+
+                        if (
+                            lastInput != currentInput ||
+                                lastDirection != currentDirection ||
+                                lastGestureDragOffset != currentGestureDragOffset
                         ) {
-                            lastFrameTimeNanos = currentAnimationTimeNanos
-                            lastInput = currentInput
-                            lastDirection = currentDirection
-                            lastGestureDragOffset = currentGestureDragOffset
-
-                            currentAnimationTimeNanos = frameTimeNanos
-                            currentInput = input.invoke()
-                            currentDirection = gestureContext.direction
-                            currentGestureDragOffset = gestureContext.dragOffset
-
-                            if (
-                                lastInput != currentInput ||
-                                    lastDirection != currentDirection ||
-                                    lastGestureDragOffset != currentGestureDragOffset
-                            ) {
+                            scheduleNextFrame = true
+                        }
+                        managedComputations.forEach {
+                            if (it.onFrameStart(isAnimatingUninterrupted)) {
                                 scheduleNextFrame = true
-                            }
-                            managedComputations.forEach {
-                                if (it.onFrameStart(isAnimatingUninterrupted)) {
-                                    scheduleNextFrame = true
-                                }
                             }
                         }
                     }
@@ -263,10 +210,6 @@ class MotionValueCollection(
         managedComputations.remove(toDispose)
         toDispose.onDeactivate()
     }
-
-    companion object {
-        var isTraceEnabled: Boolean = false
-    }
 }
 
 internal class ManagedMotionComputation(
@@ -313,7 +256,8 @@ internal class ManagedMotionComputation(
     }
 
     override fun debugInspector(): DebugInspector {
-        if (debugInspectorRefCount.getAndIncrement() == 0) {
+        debugInspectorRefCount++
+        if (debugInspectorRefCount == 1) {
             debugInspector =
                 DebugInspector(
                     FrameData(
@@ -335,10 +279,11 @@ internal class ManagedMotionComputation(
         return checkNotNull(debugInspector)
     }
 
-    private var debugInspectorRefCount = AtomicInteger(0)
+    private var debugInspectorRefCount = 0
 
     private fun onDisposeDebugInspector() {
-        if (debugInspectorRefCount.decrementAndGet() == 0) {
+        debugInspectorRefCount--
+        if (debugInspectorRefCount == 0) {
             debugInspector = null
         }
     }
@@ -446,8 +391,11 @@ internal class ManagedMotionComputation(
                 )
         }
 
-        return lastSpringState != capturedSpringState ||
-            lastComputedValues != capturedComputedValues
+        return if (isSameSegmentAndAtRest) {
+            false
+        } else {
+            lastSpringState != capturedSpringState || lastComputedValues != capturedComputedValues
+        }
     }
 
     fun wantWakeup(): Boolean {

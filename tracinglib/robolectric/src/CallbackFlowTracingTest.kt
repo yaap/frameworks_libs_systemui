@@ -16,11 +16,9 @@
 
 package com.android.test.tracing.coroutines
 
-import android.platform.test.annotations.EnableFlags
 import com.android.app.tracing.coroutines.createCoroutineTracingContext
 import com.android.app.tracing.coroutines.flow.stateInTraced
 import com.android.app.tracing.coroutines.launchTraced
-import com.android.systemui.Flags.FLAG_COROUTINE_TRACING
 import java.util.concurrent.Executor
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -129,7 +127,6 @@ private class ExampleRepositoryImpl(
                 )
 }
 
-@EnableFlags(FLAG_COROUTINE_TRACING)
 class CallbackFlowTracingTest : TestBase() {
 
     private val bgScope: CoroutineScope by lazy {
@@ -149,15 +146,11 @@ class CallbackFlowTracingTest : TestBase() {
                 // upstream flow already has tracing, so tracing with a collect call here would be
                 // redundant. That's why we call `collect` instead of `collectTraced`
                 repository.combinedState.collect {
-                    expect(
-                        "1^main:1^collectCombined",
-                        "collect:combinedState",
-                        "emit:combinedState",
-                    )
+                    expect("1^:1^collectCombined", "combinedState#collect", "emit")
                 }
             }
             delay(10)
-            expect("1^main")
+            expect("1^")
             delay(10)
             exampleTracker.forceUpdate(1, false, "A") // <-- no change
             delay(10)
@@ -173,7 +166,7 @@ class CallbackFlowTracingTest : TestBase() {
             delay(10)
             repository.otherState.value = true // <-- should update `combinedState`
             delay(10)
-            expect("1^main")
+            expect("1^")
             cancel("Cancelled normally for test")
         }
         bgScope.cancel("Cancelled normally for test")

@@ -15,7 +15,6 @@
  */
 package com.android.systemui.monet
 
-import android.app.WallpaperColors
 import android.content.theming.ThemeStyle
 import android.graphics.Color
 import android.util.Log
@@ -23,6 +22,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import androidx.test.platform.app.InstrumentationRegistry
 import com.android.systemui.monet.ColorScheme.GOOGLE_BLUE
+import com.google.ux.material.libmonet.dynamiccolor.ColorSpec.SpecVersion
+import com.google.ux.material.libmonet.dynamiccolor.DynamicScheme.Platform
 import com.google.ux.material.libmonet.hct.Hct
 import com.google.ux.material.libmonet.scheme.SchemeTonalSpot
 import java.io.File
@@ -126,9 +127,12 @@ class ColorSchemeTest {
                     val style = document.createElement(ThemeStyle.name(styleValue).lowercase())
                     val colorScheme =
                         ColorScheme(
-                            WallpaperColors(sourceColor, sourceColor, sourceColor),
+                            listOf(sourceColor.toArgb()),
                             isDarkMode,
                             styleValue,
+                            0.0,
+                            SpecVersion.SPEC_2026,
+                            Platform.PHONE,
                         )
 
                     style.appendChild(
@@ -197,18 +201,13 @@ class ColorSchemeTest {
         arrayOf(false, true).forEach { isDark ->
             val suffix = if (isDark) "_dark" else "_light"
             val dynamicScheme = SchemeTonalSpot(Hct.fromInt(GOOGLE_BLUE), isDark, CONTRAST)
-            DynamicColors.getAllDynamicColorsMapped().forEach {
-                resources.createColorEntry(
-                    "system_${it.first}$suffix",
-                    it.second.getArgb(dynamicScheme),
-                )
-            }
-        }
-
-        // fixed colors
-        val dynamicScheme = SchemeTonalSpot(Hct.fromInt(GOOGLE_BLUE), false, CONTRAST)
-        DynamicColors.getFixedColorsMapped().forEach {
-            resources.createColorEntry("system_${it.first}", it.second.getArgb(dynamicScheme))
+            (DynamicColors.getAllDynamicColorsMapped() + DynamicColors.getFixedColorsMapped())
+                .forEach {
+                    resources.createColorEntry(
+                        "system_${it.first}$suffix",
+                        it.second.getArgb(dynamicScheme),
+                    )
+                }
         }
 
         // custom colors
@@ -302,8 +301,7 @@ class ColorSchemeTest {
             (DynamicColors.getAllDynamicColorsMapped() + DynamicColors.getFixedColorsMapped())
                 .forEach {
                     val newName = ("material_color_" + it.first).snakeToLowerCamelCase()
-                    val colorValue =
-                        "@color/system_" + it.first + if (it.first.contains("fixed")) "" else suffix
+                    val colorValue = "@color/system_" + it.first + suffix
 
                     resources.createColorEntry(newName, colorValue)
                 }
@@ -331,19 +329,13 @@ class ColorSchemeTest {
         val existingFields = rClass.declaredFields.map { it.name }.toSet()
 
         arrayOf("_light", "_dark").forEach { suffix ->
-            DynamicColors.getAllDynamicColorsMapped().forEach {
-                val name = "system_" + it.first + suffix
-                if (!existingFields.contains(name)) {
-                    group.createEntry("public", arrayOf(Pair("name", name)), null)
+            (DynamicColors.getAllDynamicColorsMapped() + DynamicColors.getFixedColorsMapped())
+                .forEach {
+                    val name = "system_" + it.first + suffix
+                    if (!existingFields.contains(name)) {
+                        group.createEntry("public", arrayOf(Pair("name", name)), null)
+                    }
                 }
-            }
-        }
-
-        DynamicColors.getFixedColorsMapped().forEach {
-            val name = "system_${it.first}"
-            if (!existingFields.contains(name)) {
-                group.createEntry("public", arrayOf(Pair("name", name)), null)
-            }
         }
 
         saveFile(document, "public.xml")

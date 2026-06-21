@@ -44,7 +44,6 @@ import com.android.mechanics.spec.SegmentData
 import com.android.mechanics.spec.SegmentKey
 import com.android.mechanics.spec.SemanticKey
 import com.android.mechanics.spring.SpringState
-import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -255,10 +254,11 @@ class MotionValue(
         internal const val TAG = "MotionValue"
     }
 
-    private var debugInspectorRefCount = AtomicInteger(0)
+    private var debugInspectorRefCount = 0
 
     private fun onDisposeDebugInspector() {
-        if (debugInspectorRefCount.decrementAndGet() == 0) {
+        debugInspectorRefCount--
+        if (debugInspectorRefCount == 0) {
             impl.debugInspector = null
         }
     }
@@ -269,7 +269,8 @@ class MotionValue(
      * The returned [DebugInspector] must be [DebugInspector.dispose]d when no longer needed.
      */
     override fun debugInspector(): DebugInspector {
-        if (debugInspectorRefCount.getAndIncrement() == 0) {
+        debugInspectorRefCount++
+        if (debugInspectorRefCount == 1) {
             impl.debugInspector =
                 DebugInspector(
                     FrameData(
@@ -358,10 +359,28 @@ private class ObservableComputations(
 
     // ---- Computations ---------------------------------------------------------------------------
 
+    private var snappedToInput by mutableStateOf(false)
+
+    protected override fun snapToInput() {
+        super.snapToInput()
+
+        with(currentComputedValues) {
+            lastSegment = segment
+            lastGuaranteeState = guarantee
+            lastAnimation = animation
+        }
+        directMappedVelocity = 0f
+        lastSpringState = currentSpringState
+        lastFrameTimeNanos = -1L
+        lastInput = currentInput
+        lastGestureDragOffset = currentGestureDragOffset
+
+        snappedToInput = true
+    }
+
     suspend fun keepRunning(continueRunning: () -> Boolean) {
         check(!isActive) { "MotionValue($label) is already running" }
         isActive = true
-
         // These `captured*` values will be applied to the `last*` values, at the beginning
         // of the each new frame.
         // TODO(b/397837971): Encapsulate the state in a StateRecord.
@@ -374,6 +393,7 @@ private class ObservableComputations(
         var capturedInput = currentInput
         var capturedGestureDragOffset = currentGestureDragOffset
         var capturedDirection = currentDirection
+        snappedToInput = false
 
         try {
             debugIsAnimating = true
@@ -389,7 +409,11 @@ private class ObservableComputations(
                 withFrameNanos { frameTimeNanos ->
                     currentAnimationTimeNanos = frameTimeNanos
 
-                    // With the new frame started, copy
+                    if (snappedToInput) {
+                        // during the last frame, onSnapToInput was performed; do not clobber
+                        // the last* state, this was reset in onSnapToInput  already.
+                        return@withFrameNanos
+                    }
 
                     lastSegment = capturedSegment
                     lastGuaranteeState = capturedGuaranteeState
@@ -417,7 +441,7 @@ private class ObservableComputations(
 
                 var scheduleNextFrame = false
                 var breakpointHaptics: BreakpointHaptics? = null
-                if (!isSameSegmentAndAtRest) {
+                if (!isSameSegmentAndAtRest || snappedToInput) {
                     // Read currentComputedValues only once and update it, if necessary
                     val currentValues = currentComputedValues
 
@@ -466,6 +490,7 @@ private class ObservableComputations(
                 }
 
                 capturedFrameTimeNanos = currentAnimationTimeNanos
+                snappedToInput = false
 
                 debugInspector?.run {
                     frame =

@@ -56,10 +56,10 @@ public class TrackTracer(
     }
 
     /** See [Trace.asyncTraceForTrackBegin]. */
-    public inline fun <T> traceAsync(sliceName: () -> String, block: () -> T): T {
+    public inline fun <T> traceAsync(crossinline sliceName: () -> String, block: () -> T): T {
         contract {
-            callsInPlace(block, InvocationKind.EXACTLY_ONCE)
             callsInPlace(sliceName, InvocationKind.AT_MOST_ONCE)
+            callsInPlace(block, InvocationKind.EXACTLY_ONCE)
         }
         return TraceUtils.traceAsync(traceTag, trackName, sliceName, block)
     }
@@ -78,12 +78,12 @@ public class TrackTracer(
     }
 
     /** Traces [block] both sync and async. */
-    public fun traceSyncAndAsync(sliceName: () -> String, block: () -> Unit) {
+    public fun <T> traceSyncAndAsync(sliceName: () -> String, block: () -> T): T {
         contract {
-            callsInPlace(block, InvocationKind.EXACTLY_ONCE)
             callsInPlace(sliceName, InvocationKind.AT_MOST_ONCE)
+            callsInPlace(block, InvocationKind.EXACTLY_ONCE)
         }
-        if (Trace.isEnabled()) {
+        return if (Trace.isEnabled()) {
             val name = sliceName()
             TraceUtils.trace(name) { traceAsync(name, block) }
         } else {

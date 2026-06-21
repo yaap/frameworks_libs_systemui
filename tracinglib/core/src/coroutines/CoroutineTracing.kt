@@ -60,9 +60,12 @@ public suspend inline fun <R> coroutineScopeTraced(
 }
 
 /**
- * Convenience function for calling [CoroutineScope.launch] with [traceCoroutine] to enable tracing.
+ * Convenience function for calling [CoroutineScope.launch] with an additional context element for
+ * naming the new coroutine for tracing.
  *
- * @see traceCoroutine
+ * @param spanName lazy String to be used to name the new coroutine
+ * @see launch
+ * @see CoroutineTraceName
  */
 public inline fun CoroutineScope.launchTraced(
     crossinline spanName: () -> String,
@@ -103,9 +106,12 @@ public fun <T> Flow<T>.launchInTraced(spanName: String, scope: CoroutineScope): 
 }
 
 /**
- * Convenience function for calling [CoroutineScope.async] with [traceCoroutine] enable tracing
+ * Convenience function for calling [CoroutineScope.async] with an additional context element for
+ * naming the new coroutine for tracing.
  *
- * @see traceCoroutine
+ * @param spanName lazy String to be used to name the new coroutine
+ * @see async
+ * @see CoroutineTraceName
  */
 public inline fun <T> CoroutineScope.asyncTraced(
     crossinline spanName: () -> String,
@@ -132,9 +138,10 @@ public fun <T> CoroutineScope.asyncTraced(
 }
 
 /**
- * Convenience function for calling [withContext] with [traceCoroutine] to enable tracing.
+ * Convenience function for calling [withContext] with [traceCoroutine].
  *
- * @see traceCoroutine
+ * @param spanName lazy String used to name of the section of coroutine execution
+ * @see withContext
  */
 public suspend inline fun <T> withContextTraced(
     crossinline spanName: () -> String,
@@ -149,9 +156,11 @@ public suspend inline fun <T> withContextTraced(
 }
 
 /**
- * Convenience function for calling [withContext] with [traceCoroutine] to enable tracing.
+ * Convenience function for calling [withContext] with [traceCoroutine].
  *
- * @see traceCoroutine
+ * @param spanName name of the section of coroutine execution. If `null`, the class name of the
+ *   `block` will be traced instead
+ * @see withContext
  */
 public suspend inline fun <T> withContextTraced(
     spanName: String? = null,
@@ -163,22 +172,22 @@ public suspend inline fun <T> withContextTraced(
 }
 
 /** @see kotlinx.coroutines.runBlocking */
-public fun <T> runBlockingTraced(
-    spanName: () -> String? = { null },
+public inline fun <T> runBlockingTraced(
+    crossinline spanName: () -> String,
     context: CoroutineContext = EmptyCoroutineContext,
-    block: suspend CoroutineScope.() -> T,
+    noinline block: suspend CoroutineScope.() -> T,
 ): T {
     contract {
         callsInPlace(spanName, InvocationKind.AT_MOST_ONCE)
         callsInPlace(block, InvocationKind.EXACTLY_ONCE)
     }
-    return traceSection(spanName) { runBlocking(context, block) }
+    return traceSection({ "runBlocking:${spanName()}" }) { runBlocking(context, block) }
 }
 
 /** @see kotlinx.coroutines.runBlocking */
 public fun <T> runBlockingTraced(
-    spanName: String?,
-    context: CoroutineContext,
+    spanName: String? = null,
+    context: CoroutineContext = EmptyCoroutineContext,
     block: suspend CoroutineScope.() -> T,
 ): T {
     contract { callsInPlace(block, InvocationKind.EXACTLY_ONCE) }
@@ -224,20 +233,12 @@ public inline fun <T, R> R.traceCoroutine(crossinline spanName: () -> String, bl
     // tracing is not active (i.e. when TRACE_TAG_APP is disabled). Otherwise, when the
     // coroutine resumes when tracing is active, we won't know its name.
     try {
-        if (
-            Compile.IS_DEBUG &&
-                com.android.systemui.Flags.coroutineTracing() &&
-                coroutineTracingEnabled
-        ) {
+        if (Compile.IS_DEBUG && coroutineTracingEnabled) {
             traceThreadLocal.get()?.beginCoroutineTrace(spanName())
         }
         return block()
     } finally {
-        if (
-            Compile.IS_DEBUG &&
-                com.android.systemui.Flags.coroutineTracing() &&
-                coroutineTracingEnabled
-        ) {
+        if (Compile.IS_DEBUG && coroutineTracingEnabled) {
             traceThreadLocal.get()?.endCoroutineTrace()
         }
     }
@@ -252,20 +253,12 @@ public inline fun <T> traceCoroutine(crossinline spanName: () -> String, block: 
     // tracing is not active (i.e. when TRACE_TAG_APP is disabled). Otherwise, when the
     // coroutine resumes when tracing is active, we won't know its name.
     try {
-        if (
-            Compile.IS_DEBUG &&
-                com.android.systemui.Flags.coroutineTracing() &&
-                coroutineTracingEnabled
-        ) {
+        if (Compile.IS_DEBUG && coroutineTracingEnabled) {
             traceThreadLocal.get()?.beginCoroutineTrace(spanName())
         }
         return block()
     } finally {
-        if (
-            Compile.IS_DEBUG &&
-                com.android.systemui.Flags.coroutineTracing() &&
-                coroutineTracingEnabled
-        ) {
+        if (Compile.IS_DEBUG && coroutineTracingEnabled) {
             traceThreadLocal.get()?.endCoroutineTrace()
         }
     }
@@ -295,9 +288,7 @@ internal inline fun addName(
     context: CoroutineContext,
 ): CoroutineContext {
     contract { callsInPlace(spanName, InvocationKind.AT_MOST_ONCE) }
-    return if (
-        Compile.IS_DEBUG && com.android.systemui.Flags.coroutineTracing() && coroutineTracingEnabled
-    ) {
+    return if (Compile.IS_DEBUG && coroutineTracingEnabled) {
         CoroutineTraceName(spanName()) + context
     } else {
         context

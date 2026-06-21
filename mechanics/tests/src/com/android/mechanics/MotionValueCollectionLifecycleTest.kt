@@ -28,6 +28,7 @@ import com.android.mechanics.spec.MotionSpec
 import com.android.mechanics.spec.builder.MotionBuilderContext
 import com.android.mechanics.spec.builder.directionalMotionSpec
 import com.android.mechanics.spec.builder.fixedSpatialValueSpec
+import com.android.mechanics.spec.builder.spatialDirectionalMotionSpec
 import com.android.mechanics.testing.FakeMotionSpecBuilderContext
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
@@ -81,6 +82,7 @@ class MotionValueCollectionLifecycleTest :
         assertThat(motionValue.output).isNaN()
         val inspector = motionValue.debugInspector()
         assertThat(inspector.isActive).isFalse()
+        assertThat(underTest.isAnimating).isFalse()
     }
 
     @Test
@@ -98,6 +100,7 @@ class MotionValueCollectionLifecycleTest :
         assertThat(motionValue.output).isEqualTo(1f)
         val inspector = motionValue.debugInspector()
         assertThat(inspector.isActive).isTrue()
+        assertThat(underTest.isAnimating).isFalse()
     }
 
     @Test
@@ -181,6 +184,7 @@ class MotionValueCollectionLifecycleTest :
         assertThat(underTest.isActive).isFalse()
         assertThat(inspector.isActive).isFalse()
         assertThat(underTest.managedMotionValues.size).isEqualTo(0)
+        assertThat(underTest.isAnimating).isFalse()
     }
 
     @Test
@@ -214,6 +218,7 @@ class MotionValueCollectionLifecycleTest :
         assertThat(underTest.managedMotionValues.size).isEqualTo(0)
         assertThat(inspector1.isActive).isFalse()
         assertThat(inspector2.isActive).isFalse()
+        assertThat(underTest.isAnimating).isFalse()
     }
 
     @Test
@@ -240,6 +245,7 @@ class MotionValueCollectionLifecycleTest :
         assertThat(underTest.isActive).isFalse()
         assertThat(inspector.isActive).isFalse()
         assertThat(underTest.managedMotionValues.size).isEqualTo(1)
+        assertThat(underTest.isAnimating).isFalse()
     }
 
     @Test
@@ -262,6 +268,10 @@ class MotionValueCollectionLifecycleTest :
         rule.mainClock.advanceTimeByFrame()
         rule.awaitIdle()
         assertThat(motionValue.output).isEqualTo(1f)
+
+        rule.mainClock.autoAdvance = true
+        rule.awaitIdle()
+        assertThat(underTest.isAnimating).isFalse()
     }
 
     @Test
@@ -283,15 +293,25 @@ class MotionValueCollectionLifecycleTest :
         rule.mainClock.autoAdvance = false
 
         assertThat(motionValue.output).isEqualTo(0f)
+        assertThat(motionValue.outputTarget).isEqualTo(0f)
+
         gestureContext.direction = InputDirection.Min
         assertThat(motionValue.output).isEqualTo(0f)
+        assertThat(motionValue.outputTarget).isEqualTo(0f)
 
         rule.mainClock.advanceTimeByFrame()
         rule.awaitIdle()
+        assertThat(motionValue.output).isGreaterThan(0f)
+        assertThat(motionValue.outputTarget).isEqualTo(1f)
 
-        // Note: Animation is not expected here, since the segmentKey is in both directions
-        // [minLimit,maxLimit].
+        rule.mainClock.advanceTimeUntil { motionValue.isStable }
+        rule.awaitIdle()
         assertThat(motionValue.output).isEqualTo(1f)
+        assertThat(motionValue.outputTarget).isEqualTo(1f)
+
+        rule.mainClock.autoAdvance = true
+        rule.awaitIdle()
+        assertThat(underTest.isAnimating).isFalse()
     }
 
     @Test
@@ -308,14 +328,26 @@ class MotionValueCollectionLifecycleTest :
         rule.mainClock.autoAdvance = false
 
         assertThat(motionValue.output).isEqualTo(0f)
-        spec.value = fixedSpatialValueSpec(1f)
+        assertThat(motionValue.outputTarget).isEqualTo(0f)
+
+        // Create a new spec: Reusing fixedSpatialValueSpec() creates identical
+        // min/max limits, which MotionValue interprets as the sliding segment.
+        spec.value = MotionSpec(spatialDirectionalMotionSpec { fixedValue(-1f, value = 1f) })
         assertThat(motionValue.output).isEqualTo(0f)
+        assertThat(motionValue.outputTarget).isEqualTo(0f)
 
         rule.mainClock.advanceTimeByFrame()
         rule.awaitIdle()
+        assertThat(motionValue.output).isGreaterThan(0f)
+        assertThat(motionValue.outputTarget).isEqualTo(1f)
 
-        // Note: Animation is not expected here, since the segmentKey is in both directions
-        // [minLimit,maxLimit].
+        rule.mainClock.advanceTimeUntil { motionValue.isStable }
+        rule.awaitIdle()
         assertThat(motionValue.output).isEqualTo(1f)
+        assertThat(motionValue.outputTarget).isEqualTo(1f)
+
+        rule.mainClock.autoAdvance = true
+        rule.awaitIdle()
+        assertThat(underTest.isAnimating).isFalse()
     }
 }
